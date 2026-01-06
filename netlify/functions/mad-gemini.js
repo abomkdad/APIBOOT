@@ -1,78 +1,93 @@
-export default async (request) => {
+exports.handler = async (event) => {
+  const headers = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Headers": "Content-Type",
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+    "Content-Type": "application/json; charset=utf-8",
+  };
+
+  // CORS
+  if (event.httpMethod === "OPTIONS") {
+    return { statusCode: 200, headers, body: "" };
+  }
+
+  if (event.httpMethod !== "POST") {
+    return {
+      statusCode: 405,
+      headers,
+      body: JSON.stringify({ error: "Method Not Allowed" }),
+    };
+  }
+
   try {
-    if (request.method === "OPTIONS") {
-      return new Response(null, {
-        headers: {
-          "Access-Control-Allow-Origin": "*",
-          "Access-Control-Allow-Methods": "POST, OPTIONS",
-          "Access-Control-Allow-Headers": "Content-Type",
-        },
-      });
-    }
-
-    if (request.method !== "POST") {
-      return new Response("Method Not Allowed", { status: 405 });
-    }
-
-    const body = await request.json();
-    const { message, pageUrl, pageTitle, lang } = body;
-
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
-      return new Response(
-        JSON.stringify({ replyHtml: "GEMINI_API_KEY غير موجود في Netlify" }),
-        { status: 500, headers: { "Content-Type": "application/json" } }
-      );
+      return {
+        statusCode: 500,
+        headers,
+        body: JSON.stringify({
+          error: "GEMINI_API_KEY غير موجود في Netlify (Production)",
+        }),
+      };
+    }
+
+    const req = JSON.parse(event.body || "{}");
+    const message = (req.message || "").trim();
+
+    if (!message) {
+      return {
+        statusCode: 400,
+        headers,
+        body: JSON.stringify({ error: "الرسالة فارغة" }),
+      };
     }
 
     const model = "gemini-1.5-flash";
-    const endpoint =
-      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
+    const url =
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
 
-    const systemPrompt = `
-أنت مساعد MAD Perfume.
-- رد HTML بسيط.
-- لا تخترع منتجات أو فروع.
-- عربي ↔ عبري تلقائي.
-- إذا سأل عن توفر: اقترح الاتصال بالفرع.
-`;
-
-    const geminiRes = await fetch(endpoint, {
+    const geminiRes = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        contents: [{
-          role: "user",
-          parts: [
-            { text: systemPrompt },
-            { text: `PAGE:${pageTitle}\nURL:${pageUrl}\nLANG:${lang}\nUSER:${message}` }
-          ]
-        }],
-        generationConfig: {
-          temperature: 0.4,
-          maxOutputTokens: 700
-        }
-      })
+        contents: [
+          {
+            role: "user",
+            parts: [{ text: message }],
+          },
+        ],
+      }),
     });
 
-    const data = await geminiRes.json();
-    const text =
-      data?.candidates?.[0]?.content?.parts?.map(p => p.text).join("") ||
-      "لم أتمكن من الرد الآن.";
+    const data = await geminiRes.json().catch(() => ({}));
 
-    return new Response(
-      JSON.stringify({ replyHtml: text.replace(/```/g, "").trim() }),
-      {
-        headers: {
-          "Content-Type": "application/json",
-          "Access-Control-Allow-Origin": "*",
-        },
-      }
-    );
+    if (!geminiRes.ok) {
+      return {
+        statusCode: geminiRes.status,
+        headers,
+        body: JSON.stringify({
+          geminiError: data.error || data,
+        }),
+      };
+    }
+
+    const text =
+      data?.candidates?.[0]?.content?.parts?.map((p) => p.text).join("");
+
+    return {
+      statusCode: 200,
+      headers,
+      body: JSON.stringify({
+        reply: text || "لا يوجد رد من Gemini",
+      }),
+    };
   } catch (err) {
-    return new Response(
-      JSON.stringify({ replyHtml: "Server error: " + err.message }),
-      { status: 500, headers: { "Content-Type": "application/json" } }
-    );
+    return {
+      statusCode: 500,
+      headers,
+      body: JSON.stringify({
+        serverError: err.message || String(err),
+      }),
+    };
   }
 };
